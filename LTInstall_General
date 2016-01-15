@@ -1,0 +1,416 @@
+#!/bin/sh
+#####
+# LabTech Native Linux Agent Installer
+#
+# This script installs the agent and system tray.  It must be obtained 
+# from the Web Control Center page, because that page inserts some 
+# information into this script during download.  It may be run from
+# any directory, as may the uninstall script (created during an 
+# install).  It creates the directory /usr/lib/labtech for the agent,
+# and within that creates subdirectory systray for the system tray. 
+# It starts the agent as a background job, but does not start the
+# system tray.  Users must start the system tray as needed.  This 
+# script must be run with administrator privileges, as must the agent.
+# The system tray, on the other hand, should not be run as 
+# administrator.  This script insures that the agent will start when 
+# the machine boots up by placing a startup script in directories 
+# /etc/init.d and /lib/systemd/system if they exist.  This script will 
+# not install the agent and tray if they are already present.  If an 
+# install attempt ends in an irregular manner, and that prevents the 
+# next attempt from working, it will be necessary to manually remove 
+# directory usr/lib/labtech and its contents.  After that, installs 
+# should work again.  After a successful install, the uninstall 
+# script, LTUninstall_General, should be present in the directory 
+# /usr/lib/labtech to be used when needed.  After installing, one can
+# verify that the agent is running by giving a command such as
+# "ps -e | grep LT" (without quotes).  The command output should show
+# the agent and monitor processes.  If any problems occur during
+# installation, they will be noted in the file:  /tmp/LTInstallLog.
+# If no problems occurred, that log will not be created.
+#####
+
+####
+# Constants
+####
+
+LOG_FILE="/tmp/LTInstallLog"
+INSTALL_DIR="/usr/lib/labtech"
+WGET=$(command -v wget)
+CURL=$(command -v curl)
+
+####
+# Functions
+####
+LogError()
+{
+echo $1 >> $LOG_FILE
+}
+
+DeleteAgentComponents()
+{
+rm -f LT_Readme.txt linux_* LT*.tar* LTLinuxAgent LTSystray LTAgentMonitor LTUninstall_General AgentRegistry
+rm -f 03_books.png cancel.png chat.png exit.png globe.png info.png inventory.png LabTechDefault.png LabTech.ico LabTech.png priority.png send.png ticket.png web_camera.png
+rm -rf $INSTALL_DIR
+}
+
+####
+# Main
+####
+echo
+
+# Clear any old copy of the install log
+rm -f $LOG_FILE
+
+# Determine whether 32 bit or 64 bit OS
+valFound="F"
+regSize=`getconf LONG_BIT 2>/dev/null`
+
+# Check getconf exit code
+if [ "$?" -eq "0" ]
+then
+	if [ "$regSize" -eq "32" -o "$regSize" -eq "64" ]
+	then
+		valFound="T"
+	fi
+fi
+
+if [ "$valFound" = "F" ]
+then
+	echo ""
+	echo ""
+	echo "Please select one of the following options by entering 1 or 2:"
+	echo ""
+	echo "1.  32 bit"
+	echo "2.  64 bit"
+	echo ""
+
+	answerInRange=0
+	while [ "$answerInRange" -eq 0 ]
+	do
+	  read inputline
+	  case $inputline in
+	     1) regSize=32;answerInRange=1;;
+	     2) regSize=64;answerInRange=2;;
+	     *) echo " ";echo "You must select either 1 or 2";echo " ";;
+	  esac
+	done
+
+fi
+
+# The rights on these directories are set to 777 so that the system tray can access them with any logon.
+mkdir $INSTALL_DIR
+chmod -R 744 $INSTALL_DIR
+chmod 755 $INSTALL_DIR
+
+# Theoretically, if the script has gotten this far, there cannot be an existing systray subdirectory, but to be conservative, we check anyway.
+if ! test -d $INSTALL_DIR/systray
+then
+        mkdir $INSTALL_DIR/systray
+        chmod -R 755 $INSTALL_DIR/systray
+        touch $INSTALL_DIR/systray/SysTrayLog.txt
+        chmod 777 $INSTALL_DIR/systray/SysTrayLog.txt
+fi
+
+# Determine the flavor of Linux being run
+cd /etc
+
+redhat_count=`grep -i redhat * 2>/dev/null | wc -l`
+debian_count=`grep -i debian * 2>/dev/null | wc -l`
+fedora_count=`grep -i fedora * 2>/dev/null | wc -l`
+ubuntu_count=`grep -i ubuntu * 2>/dev/null | wc -l`
+centos_count=`grep -i centos * 2>/dev/null | wc -l`
+suse_count=`grep -i suse * 2>/dev/null | wc -l`
+
+cd -
+
+count=0
+type="FEDORA"
+
+if test $redhat_count -gt $count
+   then type="REDHAT"
+   count=$redhat_count
+fi
+if test $debian_count -gt $count
+   then type="DEBIAN"
+   count=$debian_count
+fi
+if test $fedora_count -gt $count
+   then type="FEDORA"
+   count=$fedora_count
+fi
+if test $ubuntu_count -gt $count
+   then type="UBUNTU"
+   count=$ubuntu_count
+fi
+if test $centos_count -gt $count
+   then type="CENTOS"
+   count=$centos_count
+fi
+if test $suse_count -gt $count
+   then type="SUSE"
+   count=$suse_count
+fi
+
+if test $count -lt 1
+   then echo "Cannot tell Linux flavor.  Doing Fedora (default) install."
+   exit
+else
+   echo $type " Linux detected.  Installing LabTech."
+fi
+
+rm LTsetup*.ta* 2>/dev/null
+
+case $regSize in
+  32) 
+        if [ ! -z $WGET ]
+        	then
+        	echo "WGet found, using to download agent files."
+        	$WGET --no-check-certificate https://lt.imagineiti.com/labtech/updates/LTsetup.tar
+        else
+        	if [ ! -z $CURL ]
+        		then
+        		echo "WGet does not appear to exist on the system. Using cURL."
+        		$CURL -k -O https://lt.imagineiti.com/labtech/updates/LTsetup.tar
+        	else
+        		echo "Both cURL and WGet appear to be missing, unable to download the agent files. Please install either cURL or WGet and re-run the installer."
+                fi
+        fi
+        	
+	if [ ! -f "LTsetup.tar" ]
+	then
+	    rmdir $INSTALL_DIR/systray 2>/dev/null
+	    rmdir $INSTALL_DIR 2>/dev/null
+	    echo
+	    echo "Tar file failed to download.  Please call support."
+	    LogError "Tar file failed to download.  Exiting without installing."
+	    exit
+	fi
+  	tar -xvf LTsetup.tar
+	;;
+  64) 
+        if [ ! -z $WGET ]
+            then
+            echo "WGet found, using to download agent files."
+            $WGET --no-check-certificate https://lt.imagineiti.com/labtech/updates/LTsetup64.tar
+        else
+            if [ ! -z $CURL ]
+            then
+                    echo "WGet does not appear to exist on the system. Using cURL."
+                    $CURL -k -O https://lt.imagineiti.com/labtech/updates/LTsetup64.tar
+            else
+                    echo "Both cURL and WGet appear tobe missing, unable to download the agent files. Please install either cURL or WGet and re-run the installer."
+            fi
+        fi
+  	
+	if [ ! -f "LTsetup64.tar" ]
+	then
+	    rmdir $INSTALL_DIR/systray 2>/dev/null
+	    rmdir $INSTALL_DIR 2>/dev/null
+	    echo
+	    echo "Tar file failed to download.  Please call support."
+	    LogError "Tar file failed to download.  Exiting without installing."
+	    exit
+	fi
+  	tar -xvf LTsetup64.tar
+	;;
+  *) 
+	echo "Could not determine OS bit size.  Please call support."
+	LogError "Could not determine OS bit size.  Exiting without installing."
+	exit
+	;;
+esac
+
+if [ ! -f "LTLinuxAgent" ]
+then
+   echo
+   echo "Agent executable not found among downloaded components.  Please call support."
+   LogError "Agent executable not found.  Untar may have failed.  Exiting without installing."
+   DeleteAgentComponents
+   exit
+fi
+
+chmod 740 LT* Agent*
+
+# The file AgentRegistry already exists, and here we add new lines to it, but AgentInternals is created here.
+if [ -e /tmp/ltupdate/SavedComputerId ]; then
+    computer_id=$(cat /tmp/ltupdate/SavedComputerId)
+    echo computer_id=$computer_id > AgentRegistry
+    echo cmd_tab_task_timeout=3600 >> AgentRegistry
+    echo log_max_bytes=1500000 >> AgentRegistry
+    echo log_level_generic=2 >> AgentRegistry
+    echo log_level_inventory=2 >> AgentRegistry
+    echo log_level_commands=2 >> AgentRegistry
+    echo log_level_communication=2 >> AgentRegistry
+    echo log_level_main_thread=2 >> AgentRegistry
+    echo log_level_monitors=2 >> AgentRegistry
+    echo log_level_snmp=2 >> AgentRegistry
+    echo monitor_trending_enabled=T >> AgentRegistry
+    echo network_interface_name= >> AgentRegistry
+fi
+
+echo "server_address=https://lt.imagineiti.com/labtech/agent.aspx" >> AgentRegistry
+echo "location_id=1" >> AgentRegistry
+echo "register_size="$regSize >> AgentRegistry
+echo "ticket_code=lckg4NznUH1Szhv6tRoacQ==" > AgentInternals
+
+if [ -e /tmp/ltupdate/AgentInternals.bak ]; then
+passkey=$(grep computer_passkey /tmp/ltupdate/AgentInternals.bak)
+comppk=$(echo "$passkey" | awk -F '=' '{ print $2 }')
+echo computer_passkey=$comppk >> AgentInternals
+fi
+
+chmod 740 Agent*
+mv LTUninstall_General $INSTALL_DIR
+mv LTLinuxAgent $INSTALL_DIR
+mv Agent* $INSTALL_DIR
+mv LTAgentMonitor $INSTALL_DIR
+mv LTSystray 03_books.png cancel.png chat.png exit.png globe.png info.png inventory.png LabTechDefault.png LabTech.ico LabTech.png priority.png send.png ticket.png web_camera.png $INSTALL_DIR/systray 2>/dev/null
+mv LT_Readme.txt $INSTALL_DIR
+
+# Install agent startup script.
+# If the initd directories are present, then place the startup script there and create links to the rc.d directories.
+automaticStart="F"
+if test -d /etc/init.d
+then
+	rm -f /etc/init.d/linux_agent_fedora
+	rm -f /etc/init.d/linux_agent_ubuntu
+	rm -f /etc/init.d/linux_agent_redhat
+	rm -f /etc/init.d/linux_agent_debian
+	automaticStart="T"
+	case $type in
+   		"REDHAT"|"FEDORA"|"CENTOS"|"SUSE")
+       			mv linux_agent_redhat /etc/init.d/linux_agent
+                        chmod 750 /etc/init.d/linux_agent
+       			rm linux_agent_debian 2>/dev/null
+       			success="F"
+       			chkconfig --add linux_agent 2>/dev/null
+
+       			# Check exit code
+       			if [ "$?" -eq "0" ]
+       			then
+            			success="T"
+       			else
+            			/sbin/chkconfig --add linux_agent 2>/dev/null
+
+            			# Check exit code
+            			if [ "$?" -eq "0" ]
+            			then
+                 			success="T"
+            			fi
+       			fi
+
+       			if [ "$success" != "T" ]
+       			then
+             			# Can't find chkconfig.  Create links manually.
+             			RCPATH="NONE"
+             			if test -d /etc/rc.d/rc0.d
+             			then
+	          			RCPATH="/etc/rc.d"
+             			elif test -d "/etc/rc0.d"
+             			then
+	          			RCPATH="/etc"
+             			fi
+
+             			if [ "$RCPATH" != "NONE" ]
+             			then
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc0.d/K20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc1.d/K20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc2.d/K20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc3.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc4.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc5.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc6.d/K20linux_agent 2>/dev/null
+             			fi
+       			fi
+       			;;
+   		"DEBIAN"|"UBUNTU")
+       			mv linux_agent_debian /etc/init.d/linux_agent
+                        chmod 750 /etc/init.d/linux_agent
+       			rm linux_agent_redhat 2>/dev/null
+       			success="F"
+       			update-rc.d linux_agent defaults 2>/dev/null
+
+       			# Check exit code
+       			if [ "$?" -eq "0" ]
+       			then
+            			success="T"
+       			else
+            			/usr/sbin/update-rc.d linux_agent defaults 2>/dev/null
+
+            			# Check exit code
+            			if [ "$?" -eq "0" ]
+            			then
+                 			success="T"
+            			fi
+       			fi
+
+       			if [ "$success" != "T" ]
+       			then
+             			# Can't find update-rc.d.  Create links manually.
+             			RCPATH="NONE"
+             			if test -d /etc/rc.d/rc0.d
+             			then
+	          			RCPATH="/etc/rc.d"
+             			elif test -d "/etc/rc0.d"
+             			then
+	          			RCPATH="/etc"
+             			fi
+
+             			if [ "$RCPATH" != "NONE" ]
+             			then
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc0.d/K20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc1.d/K20linux_agent 2>/dev/null
+                 		 	ln -s /etc/init.d/linux_agent $RCPATH/rc2.d/K20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc3.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc4.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc5.d/S20linux_agent 2>/dev/null
+                  			ln -s /etc/init.d/linux_agent $RCPATH/rc6.d/K20linux_agent 2>/dev/null
+             			fi
+       			fi
+       			;;
+	esac
+fi
+
+# If the systemd directories are present, then place the service there and activate it.
+if test -d /lib/systemd/system
+    	then
+		if test -d /etc/systemd/system
+     			then
+				automaticStart="T"
+       				mv linux_agent.service /lib/systemd/system
+				systemctl enable linux_agent.service 1>/dev/null 2>/dev/null
+		fi
+fi
+rm -f linux_agent.service 2>/dev/null
+rm LTsetup*.ta* 2>/dev/null
+
+if [ $automaticStart = "F" ]
+then
+        LogError "Could not find either /etc/init.d or systemd directories, so automatic start on boot could not be implemented."
+fi
+
+# Start the agent monitor in the background unless the command line argument "nostart" is added.  "Nostart" is used for version updates.
+if [ "$1" != "nostart" ]
+then
+	# Try to start the monitor the systemd way.  If it comes up, we're done.  If not, just start the monitor in the background.
+	# The monitor will see that the agent is down and start it.  The monitor program takes one command line argument, which 
+	# is the program to be monitored.
+	systemctl start linux_agent.service 1>/dev/null 2>/dev/null
+	sleep 1
+	MonitorLine=`ps -ef | grep LTAgentMonitor | grep -v grep`
+	if [ -z "$MonitorLine" ]
+		then
+		$INSTALL_DIR/LTAgentMonitor /usr/lib/labtech/LTLinuxAgent &
+	fi
+fi
+
+# Fix permissions on linux_agent startup file
+chmod 750 /etc/init.d/linux_agent
+
+# Remove old update files if they exist
+if [ -d /tmp/ltupdate ]; then
+rm -rf /tmp/ltupdate
+fi
+
+echo
+echo "Installation is complete."
